@@ -16,7 +16,7 @@ so a Go2 can run language models like Qwen3.5 locally.
 
 ## Why the NPU is off on a stock Go2
 
-The Go2's main computer is a Rockchip **RK3588**. Its kernel has an NPU driver built in
+The Go2's main computer is a Rockchip **RK3588S**. Its kernel has an NPU driver built in
 (rknpu **0.8.2**, from 2022), but the device tree ships the NPU and its IOMMU **disabled**, so
 nothing can use it. That old driver is also too old for rknn-llm, and Rockchip's official way to get
 a newer one is to rebuild and reflash the kernel, which a secure-boot Go2 won't boot.
