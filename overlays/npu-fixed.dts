@@ -1,0 +1,68 @@
+/dts-v1/;
+/plugin/;
+/*
+ * Old Go2 board (kernel #2, e.g. 192.168.1.240): NPU for the out-of-tree rknpu 0.9.8
+ * module (alternate compatible) on the board's fixed, software-invisible rail
+ * (~800-815 mV, RK8602 power-on default, i2c not wired).
+ * 900 MHz / 1 GHz are re-enabled by rewriting their voltages to 800 mV for every
+ * speed-bin (L0..L5) so the OPP core accepts them on an 800 mV fixed regulator.
+ * Two supplies per OPP (rknpu, mem): <target min max> each.
+ * Build: dtc -@ -I dts -O dtb -o x.dtbo x.dts && fdtput -r x.dtbo /__symbols__
+ * (a /__symbols__ node makes this kernel reject the overlay -> double free -> panic).
+ */
+/ {
+	fragment@0 {
+		target-path = "/iommu@fdab9000";
+		__overlay__ {
+			status = "okay";
+		};
+	};
+
+	fragment@1 {
+		target-path = "/";
+		__overlay__ {
+			vdd_npu_fixed: vdd-npu-fixed {
+				compatible = "regulator-fixed";
+				regulator-name = "vdd_npu_s0_fixed";
+				regulator-min-microvolt = <800000>;
+				regulator-max-microvolt = <800000>;
+				regulator-always-on;
+				regulator-boot-on;
+			};
+		};
+	};
+
+	fragment@2 {
+		target-path = "/npu@fdab0000";
+		__overlay__ {
+			compatible = "rockchip,rk3588-rknpu-mod";
+			status = "okay";
+			rknpu-supply = <&vdd_npu_fixed>;
+			mem-supply = <&vdd_npu_fixed>;
+		};
+	};
+
+	fragment@3 {
+		target-path = "/npu-opp-table/opp-900000000";
+		__overlay__ {
+			opp-microvolt    = <800000 800000 850000 800000 800000 850000>;
+			opp-microvolt-L1 = <800000 800000 850000 800000 800000 850000>;
+			opp-microvolt-L2 = <800000 800000 850000 800000 800000 850000>;
+			opp-microvolt-L3 = <800000 800000 850000 800000 800000 850000>;
+			opp-microvolt-L4 = <800000 800000 850000 800000 800000 850000>;
+			opp-microvolt-L5 = <800000 800000 850000 800000 800000 850000>;
+		};
+	};
+
+	fragment@4 {
+		target-path = "/npu-opp-table/opp-1000000000";
+		__overlay__ {
+			opp-microvolt    = <800000 800000 850000 800000 800000 850000>;
+			opp-microvolt-L1 = <800000 800000 850000 800000 800000 850000>;
+			opp-microvolt-L2 = <800000 800000 850000 800000 800000 850000>;
+			opp-microvolt-L3 = <800000 800000 850000 800000 800000 850000>;
+			opp-microvolt-L4 = <800000 800000 850000 800000 800000 850000>;
+			opp-microvolt-L5 = <800000 800000 850000 800000 800000 850000>;
+		};
+	};
+};

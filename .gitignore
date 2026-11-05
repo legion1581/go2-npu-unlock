@@ -1,0 +1,15 @@
+examples/llm/lib/
+examples/llm/include/
+examples/llm/models/
+examples/llm/rkllm_bench
+__pycache__/
+*.o
+*.cmd
+*.mod
+*.mod.c
+Module.symvers
+modules.order
+dist/
+examples/llm/data_quant.json
+build/out/
+!build/Module.symvers

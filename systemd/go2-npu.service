@@ -1,0 +1,14 @@
+[Unit]
+Description=Unitree Go2 NPU enable (Rockchip rknpu 0.9.8)
+Documentation=file:/opt/go2-npu/README.md
+After=local-fs.target systemd-modules-load.service
+ConditionPathExists=!/opt/go2-npu/DISABLE
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/go2-npu/go2-npu start
+TimeoutStartSec=60
+
+[Install]
+WantedBy=multi-user.target

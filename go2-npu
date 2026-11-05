@@ -1,0 +1,138 @@
+#!/bin/sh
+# go2-npu: enable the RK3588 NPU on a Unitree Go2 with the Rockchip rknpu 0.9.8 driver.
+#
+#   go2-npu start     load the driver + device-tree overlay (what the boot service runs)
+#   go2-npu detect    run every check and say what "start" would do; changes nothing
+#   go2-npu status    show driver version, board type, clock, voltage, load
+#
+# Nothing is written to any partition. Everything is undone by a reboot.
+# Environment: GO2_NPU_FORCE=1 skips the kernel-build allow-list (the touch file
+# /opt/go2-npu/FORCE does the same). /opt/go2-npu/DISABLE stops "start".
+
+set -u
+VERSION="1.0.0"
+# Files live next to this script: /opt/go2-npu when installed, the unpacked package before that.
+SELF=$(readlink -f "$0")
+PREFIX="${GO2_NPU_PREFIX:-$(dirname "$SELF")}"
+DT=/proc/device-tree
+DEVFREQ=/sys/class/devfreq/fdab0000.npu
+DBG=/sys/kernel/debug/rknpu
+
+# Kernel builds this package was tested on (uname -v). Same release string, different builds.
+KNOWN_BUILDS="
+#2 SMP PREEMPT_RT Mon Nov 27 07:19:33 UTC 2023
+#74 SMP PREEMPT_RT Wed Oct 16 15:26:07 CST 2024
+"
+
+# Under systemd ($INVOCATION_ID set) stdout already goes to the journal; elsewhere also send it to syslog.
+log() { echo "go2-npu: $*"; [ -z "${INVOCATION_ID:-}" ] && command -v logger >/dev/null 2>&1 && logger -t go2-npu -- "$*"; return 0; }
+die() { log "ERROR: $*"; exit 1; }
+dtstr() { [ -e "$1" ] && tr -d '\0' < "$1"; }
+
+npu_running() {
+	[ -d /sys/module/rknpu2 ] && [ -e /sys/bus/platform/drivers/RKNPU2/fdab0000.npu ]
+}
+
+# Board type: "dvfs" when the NPU regulator (RK8602 at i2c-2 0x42) answers, else "fixed".
+detect_board() {
+	i=0
+	while [ $i -lt 20 ]; do
+		if [ -e /sys/bus/i2c/devices/2-0042/driver ]; then
+			for r in /sys/class/regulator/regulator.*; do
+				[ "$(cat "$r/name" 2>/dev/null)" = "vdd_npu_s0" ] && { echo dvfs; return; }
+			done
+		fi
+		# the old board revision: the RK8602 probe has already failed for good
+		dmesg 2>/dev/null | grep -q "2-0042: Failed to get chip ID" && { echo fixed; return; }
+		i=$((i + 1)); sleep 0.5
+	done
+	echo fixed
+}
+
+ksym() { awk -v s="$1" '$3 == s { print "0x" $1; exit }' /proc/kallsyms; }
+
+# All safety checks. Prints problems; returns non-zero if loading is not safe.
+preflight() {
+	ok=0
+	[ "$(id -u)" = 0 ] || { log "must run as root"; return 1; }
+	[ "$(uname -m)" = aarch64 ] || { log "not an aarch64 system"; ok=1; }
+	[ "$(uname -r)" = "5.10.176-rt86+" ] || { log "kernel $(uname -r) is not the Go2 kernel 5.10.176-rt86+"; ok=1; }
+	if ! printf '%s\n' "$KNOWN_BUILDS" | grep -qxF "$(uname -v)"; then
+		if [ "${GO2_NPU_FORCE:-0}" = 1 ] || [ -e "$PREFIX/FORCE" ]; then
+			log "kernel build '$(uname -v)' is not on the tested list (forced)"
+		else
+			log "kernel build '$(uname -v)' is not on the tested list; set GO2_NPU_FORCE=1 to try anyway"
+			ok=1
+		fi
+	fi
+	case "$(dtstr $DT/model)" in *"GO2"*|*"Go2"*|*"go2"*) ;; *) log "device-tree model '$(dtstr $DT/model)' is not a Go2 board"; ok=1 ;; esac
+	for n in npu@fdab0000 iommu@fdab9000 npu-opp-table/opp-900000000 npu-opp-table/opp-1000000000; do
+		[ -d "$DT/$n" ] || { log "device-tree node /$n missing"; ok=1; }
+	done
+	[ "$(dtstr $DT/npu@fdab0000/status)" = disabled ] || { log "the NPU is already enabled by something else (old npu_enable module or another overlay); reboot first"; ok=1; }
+	[ -d /sys/module/npu_enable ] && { log "an old npu_enable module is loaded; reboot first"; ok=1; }
+	[ -d /sys/module/rknpu2 ] && { log "rknpu2 is already loaded but the NPU is not enabled; reboot first"; ok=1; }
+	for f in modules/rknpu2.ko modules/go2_npu_overlay.ko overlays/npu-dvfs.dtbo overlays/npu-fixed.dtbo; do
+		[ -f "$PREFIX/$f" ] || { log "missing $PREFIX/$f"; ok=1; }
+	done
+	for s in __dma_map_area __dma_unmap_area iommu_setup_dma_ops; do
+		a=$(ksym $s)
+		case "$a" in ""|0x0000000000000000) log "cannot read the address of $s from /proc/kallsyms"; ok=1 ;; esac
+	done
+	return $ok
+}
+
+cmd_detect() {
+	if npu_running; then log "rknpu2 is already running"; cmd_status; return 0; fi
+	board=$(detect_board)
+	log "board type: $board ($( [ $board = dvfs ] && echo 'RK8602 NPU regulator found: full voltage scaling' || echo 'no NPU regulator on i2c: fixed ~800 mV rail'))"
+	log "would load: $PREFIX/modules/rknpu2.ko + overlay $PREFIX/overlays/npu-$board.dtbo"
+	[ -e "$PREFIX/DISABLE" ] && log "note: $PREFIX/DISABLE exists, the boot service will do nothing"
+	if preflight; then log "all checks passed"; else log "checks FAILED: start would refuse"; return 1; fi
+}
+
+cmd_start() {
+	if npu_running; then log "already running"; return 0; fi
+	[ -e "$PREFIX/DISABLE" ] && { log "$PREFIX/DISABLE exists, not loading"; return 0; }
+	preflight || die "preflight failed, nothing loaded"
+	board=$(detect_board)
+	A1=$(ksym __dma_map_area); A2=$(ksym __dma_unmap_area); A3=$(ksym iommu_setup_dma_ops)
+	log "board type $board; loading rknpu2 (kallsyms $A1 $A2 $A3)"
+	sync
+	insmod "$PREFIX/modules/rknpu2.ko" sym_dma_map_area=$A1 sym_dma_unmap_area=$A2 sym_iommu_setup_dma_ops=$A3 \
+		|| die "insmod rknpu2.ko failed (see dmesg)"
+	insmod "$PREFIX/modules/go2_npu_overlay.ko" path="$PREFIX/overlays/npu-$board.dtbo" \
+		|| die "applying overlay npu-$board.dtbo failed (see dmesg)"
+	i=0; while [ $i -lt 20 ] && ! npu_running; do i=$((i + 1)); sleep 0.25; done
+	npu_running || die "driver loaded but did not bind to the NPU (see dmesg)"
+	log "NPU enabled: $(dtstr $DBG/version 2>/dev/null || echo 'rknpu 0.9.8'), $(cat $DEVFREQ/available_frequencies 2>/dev/null | wc -w) frequency steps up to $(( $(cat $DEVFREQ/max_freq 2>/dev/null || echo 0) / 1000000 )) MHz"
+}
+
+cmd_status() {
+	echo "go2-npu $VERSION"
+	echo "kernel:    $(uname -r) $(uname -v)"
+	if ! npu_running; then
+		echo "driver:    not loaded"
+		[ -e "$PREFIX/DISABLE" ] && echo "note:      $PREFIX/DISABLE exists"
+		return 1
+	fi
+	echo "driver:    $(cat $DBG/version 2>/dev/null)"
+	if [ -e /sys/bus/i2c/devices/2-0042/driver ]; then echo "board:     dvfs (RK8602 NPU regulator)"; else echo "board:     fixed (~800 mV rail)"; fi
+	echo "governor:  $(cat $DEVFREQ/governor) ($(cat $DEVFREQ/available_frequencies | wc -w) steps, $(( $(cat $DEVFREQ/min_freq) / 1000000 ))-$(( $(cat $DEVFREQ/max_freq) / 1000000 )) MHz)"
+	echo "clock:     $(( $(cat $DEVFREQ/cur_freq) / 1000000 )) MHz"
+	echo "voltage:   $(( $(cat $DBG/volt 2>/dev/null || echo 0) / 1000 )) mV"
+	echo "power:     $(cat $DBG/power 2>/dev/null)"
+	echo "load:      $(sed 's/NPU load: *//' $DBG/load 2>/dev/null)"
+	for z in /sys/class/thermal/thermal_zone*; do
+		[ "$(cat $z/type)" = npu-thermal ] && echo "temp:      $(( $(cat $z/temp) / 1000 )) C"
+	done
+	echo "device:    $(ls -d /sys/bus/platform/drivers/RKNPU2/fdab0000.npu/drm/renderD* 2>/dev/null | sed 's|.*/|/dev/dri/|')"
+}
+
+case "${1:-}" in
+	start) cmd_start ;;
+	detect|check) cmd_detect ;;
+	status) cmd_status ;;
+	version|--version) echo "go2-npu $VERSION" ;;
+	*) echo "usage: go2-npu start|detect|status|version"; exit 2 ;;
+esac

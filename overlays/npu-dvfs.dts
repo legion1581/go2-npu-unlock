@@ -1,0 +1,20 @@
+/dts-v1/;
+/plugin/;
+/* Enable the RK3588 NPU for the out-of-tree rknpu 0.9.8 module: the node gets an
+ * alternate compatible so the built-in 0.8.2 driver never binds to it. Load the
+ * module (which registers "rockchip,rk3588-rknpu-mod") BEFORE applying this. */
+/ {
+	fragment@0 {
+		target-path = "/iommu@fdab9000";
+		__overlay__ {
+			status = "okay";
+		};
+	};
+	fragment@1 {
+		target-path = "/npu@fdab0000";
+		__overlay__ {
+			compatible = "rockchip,rk3588-rknpu-mod";
+			status = "okay";
+		};
+	};
+};

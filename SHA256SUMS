@@ -1,0 +1,4 @@
+d817100f3c35e59da67d309bb625a6fbaac39fc9a72180fe1b67032b8102f940  modules/go2_npu_overlay.ko
+4afd373ccb8d3467aad1373eb3cd53421a41ca646d95c82663bf7cb49019629e  modules/rknpu2.ko
+1294ca798a2b448b2af546944a28534776ceeeda2372ca9f39df2d975ac8d6ec  overlays/npu-dvfs.dtbo
+19ab4f0cba0133162134e3f9043c3fb4889a5e5c89c67ce99ebc7529cfcfacf5  overlays/npu-fixed.dtbo
